@@ -129,7 +129,7 @@ body.light .theme-toggle .icon-moon{display:block;}
 </button>
 <div class="wrap">
 
-  <div class="brand-logo"><img src="assets/f45-logo-transparent.png" alt="F45 Training logo"></div>
+  <div class="brand-logo"><img src="assets/f45-logo.png" alt="F45 Training logo"></div>
 
   <!-- STEP 1 — visit type -->
   <div id="step1">
@@ -308,74 +308,19 @@ $('photoInput').addEventListener('change', function(e){
 /* ============ BACKEND ============
    The save is a CORS-simple POST (no-cors + text/plain): no preflight, and
    the response is never read — Google answers a POST with a 302 redirect,
-   which makes the POST response unreadable from a browser. Delivery is
-   confirmed instead by polling the records list (GET) for the new row. */
+   which makes the POST response unreadable from a browser. So the POST
+   itself is trusted: if it reaches Google, the check-in is in. The records
+   list is NEVER downloaded to a visitor's phone — that list is the coach's,
+   and it stays on the studio iPad where it belongs. */
 function backendPost(payload){
-  try{
-    fetch(BACKEND_URL, {
-      method:'POST',
-      mode:'no-cors',
-      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    }).catch(function(){});
-  }catch(e){}
-}
-
-function backendGetRecords(maxMs){
-  /* Each read carries its own abort (at most maxMs) so a slow or hung
-     connection can never stall the flow — the try just counts as
-     "not yet". */
-  var opts={ method:'GET' }, controller=null, timer=null;
-  if(window.AbortController){
-    controller=new AbortController();
-    opts.signal=controller.signal;
-    timer=setTimeout(function(){ controller.abort(); }, Math.max(500, maxMs||6000));
-  }
-  function done(){ if(timer) clearTimeout(timer); }
-  return fetch(BACKEND_URL, opts)
-    .then(function(r){ return r.text(); })
-    .then(function(t){
-      done();
-      try{ var d=JSON.parse(t); return (d && d.records) ? d.records : null; }
-      catch(e){ return null; }
-    })
-    .catch(function(){ done(); return null; });
-}
-
-function digitsOnly(s){ return String(s==null ? '' : s).replace(/\D+/g,''); }
-
-/* This check-in is confirmed when a row exists with the same phone and
-   first name, written at or after the submit moment (60s cushion for
-   clock differences between the phone and the sheet). */
-function recordMatches(rec, payload, sinceMs){
-  if(!rec) return false;
-  if(digitsOnly(rec.phone)!==digitsOnly(payload.phone)) return false;
-  if(String(rec.firstName||'').toLowerCase()!==String(payload.firstName||'').toLowerCase()) return false;
-  var t=Date.parse(rec.timestamp);
-  return !isNaN(t) && t>=sinceMs;
-}
-function findMatch(records, payload, sinceMs){
-  if(!records) return false;
-  for(var i=0;i<records.length;i++){
-    if(recordMatches(records[i], payload, sinceMs)) return true;
-  }
-  return false;
-}
-
-/* Poll every 2s until the row appears. Hard-bounded two ways: an absolute
-   deadline (checked before every attempt, and each read aborts at the
-   time remaining) and a cap of 10 tries — so the flow always resolves to
-   success or fallback within ~20s of submitting. */
-function pollForRecord(payload, sinceMs, deadlineMs, triesLeft){
-  if(Date.now()>=deadlineMs || triesLeft<=0) return Promise.resolve(false);
-  return backendGetRecords(Math.min(6000, deadlineMs-Date.now())).then(function(records){
-    if(findMatch(records, payload, sinceMs)) return true;
-    if(Date.now()>=deadlineMs || triesLeft<=1) return false;
-    return new Promise(function(resolve){
-      setTimeout(function(){ resolve(pollForRecord(payload, sinceMs, deadlineMs, triesLeft-1)); }, 2000);
-    });
+  return fetch(BACKEND_URL, {
+    method:'POST',
+    mode:'no-cors',
+    headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
   });
 }
+
 
 /* ============ SUBMIT ============ */
 function fillSummary(prefix, p){
@@ -407,16 +352,14 @@ function submitVisitor(){
     else{ fillSummary('fb', payload); goStep(4); }
   }
 
-  var sinceMs=Date.now()-60000;
-  var deadlineMs=Date.now()+20000;
-  /* If this check-in already landed (e.g. "Try again" after a missed
-     confirmation), confirm it instead of posting a duplicate row. The
-     pre-check shares the same 20s deadline as the poll. */
-  backendGetRecords(Math.min(6000, deadlineMs-Date.now())).then(function(records){
-    if(findMatch(records, payload, sinceMs)){ settle(true); return; }
-    backendPost(payload);
-    pollForRecord(payload, sinceMs, deadlineMs, 10).then(settle);
-  });
+  /* Trust the POST: it resolving means the check-in reached Google.
+     The fallback screen appears only when the fetch itself fails —
+     the phone cannot reach Google at all — and then the coach checks
+     the visitor in from the summary on that screen. */
+  backendPost(payload).then(
+    function(){ settle(true); },
+    function(){ settle(false); }
+  );
 }
 
 function resetFlow(){
