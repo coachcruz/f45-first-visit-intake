@@ -55,15 +55,15 @@ p{margin:0}
 
 /* STEP 1 — visit type rows */
 .type-grid{display:flex;flex-direction:column;gap:6px}
-.type-card{display:flex;align-items:center;gap:10px;border:1.5px solid var(--line);background:var(--surface);border-radius:10px;padding:15px 14px;text-align:left;cursor:pointer;color:var(--ink);transition:border-color .15s, background .15s;width:100%;min-height:46px}
-.type-card:hover{border-color:var(--ink)}
-.type-card.selected{border-color:var(--red);background:color-mix(in srgb, var(--red) 6%, var(--surface))}
-body:not(.light) .type-card{background:linear-gradient(180deg,#1e2a4a,#1b2440)}
-body:not(.light) .type-card.selected{background:color-mix(in srgb, var(--red) 14%, #1e2a4a)}
+.type-card{display:flex;align-items:center;gap:10px;border:1.5px solid rgba(255,255,255,.28);background:linear-gradient(180deg,#ff4d5c,var(--red) 55%,#c81f2e);border-radius:10px;padding:15px 14px;text-align:left;cursor:pointer;color:#fff;transition:border-color .15s, background .15s;width:100%;min-height:46px;box-shadow:0 8px 22px rgba(246,55,70,.30), inset 0 1px 0 rgba(255,255,255,.35)}
+.type-card:hover{border-color:#fff}
+.type-card.selected{border-color:#fff;background:linear-gradient(180deg,#c81f2e,#8f1220);box-shadow:0 0 0 2px #fff, 0 8px 22px rgba(0,0,0,.35)}
+body:not(.light) .type-card{background:linear-gradient(180deg,#ff4d5c,var(--red) 55%,#c81f2e)}
+body:not(.light) .type-card.selected{background:linear-gradient(180deg,#c81f2e,#8f1220)}
 .type-card .tt{flex:1;min-width:0}
 .type-card b{font-family:"Barlow Condensed";text-transform:uppercase;font-size:19px;line-height:1;letter-spacing:.02em;white-space:nowrap}
-.type-card .tick{flex:0 0 20px;width:20px;height:20px;border-radius:50%;border:2px solid var(--line);display:grid;place-items:center;font-size:11px;color:transparent;margin-left:auto}
-.type-card.selected .tick{background:var(--red);border-color:var(--red);color:#fff}
+.type-card .tick{flex:0 0 20px;width:20px;height:20px;border-radius:50%;border:2px solid rgba(255,255,255,.55);display:grid;place-items:center;font-size:11px;color:transparent;margin-left:auto}
+.type-card.selected .tick{background:#fff;border-color:#fff;color:var(--red)}
 
 /* STEP 2 — form */
 .capture{display:grid;grid-template-columns:128px 1fr;gap:16px}
@@ -271,15 +271,67 @@ function refreshAvatar(){
 $('fFirst').addEventListener('input', refreshAvatar);
 $('fLast').addEventListener('input', refreshAvatar);
 
-function downscalePhoto(img, fallback){
+/* Minimal EXIF orientation reader (JPEG APP1). Returns 1–8, default 1. */
+function readExifOrientation(buf){
   try{
-    var max=400, w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
-    if(!w||!h) return fallback;
-    var scale=Math.min(1, max/Math.max(w,h));
-    var canvas=document.createElement('canvas');
-    canvas.width=Math.max(1, Math.round(w*scale));
-    canvas.height=Math.max(1, Math.round(h*scale));
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    var view=new DataView(buf);
+    if(view.getUint16(0)!==0xFFD8) return 1;
+    var offset=2;
+    while(offset+4<view.byteLength){
+      var marker=view.getUint16(offset);
+      var size=view.getUint16(offset+2);
+      if(marker===0xFFE1 && view.getUint32(offset+4)===0x45786966){
+        var tiff=offset+10;
+        var little=view.getUint16(tiff)===0x4949;
+        var dir=tiff+view.getUint32(tiff+4, little);
+        var count=view.getUint16(dir, little);
+        for(var i=0;i<count;i++){
+          var entry=dir+2+i*12;
+          if(view.getUint16(entry, little)===0x0112){
+            var v=view.getUint16(entry+8, little);
+            return (v>=1 && v<=8) ? v : 1;
+          }
+        }
+        return 1;
+      }
+      offset+=2+size;
+    }
+  }catch(e){}
+  return 1;
+}
+
+/* Draw the image onto a canvas with its EXIF orientation applied and
+   the long edge capped at maxDim. Returns the canvas. */
+function drawOriented(img, orientation, maxDim){
+  var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+  var scale=Math.min(1, maxDim/Math.max(w,h));
+  var dw=Math.max(1, Math.round(w*scale)), dh=Math.max(1, Math.round(h*scale));
+  var swap=orientation>=5 && orientation<=8;
+  var canvas=document.createElement('canvas');
+  canvas.width=swap ? dh : dw;
+  canvas.height=swap ? dw : dh;
+  var ctx=canvas.getContext('2d');
+  switch(orientation){
+    case 2: ctx.transform(-1,0,0,1,dw,0); break;
+    case 3: ctx.transform(-1,0,0,-1,dw,dh); break;
+    case 4: ctx.transform(1,0,0,-1,0,dh); break;
+    case 5: ctx.transform(0,1,1,0,0,0); break;
+    case 6: ctx.transform(0,1,-1,0,dh,0); break;
+    case 7: ctx.transform(0,-1,-1,0,dh,dw); break;
+    case 8: ctx.transform(0,-1,1,0,0,dw); break;
+    default: break;
+  }
+  ctx.drawImage(img, 0, 0, dw, dh);
+  return canvas;
+}
+
+/* Produce the FINAL photo once — orientation baked in, downscaled —
+   so the avatar preview and the saved record are the same image the
+   visitor saw, never a flipped copy. */
+function finalizePhoto(img, orientation, fallback){
+  try{
+    if(!(img.naturalWidth||img.width)) return fallback;
+    var canvas=drawOriented(img, orientation, 400);
     var q=0.78, out=canvas.toDataURL('image/jpeg', q);
     while(out.length>48000 && q>0.5){ q-=0.14; out=canvas.toDataURL('image/jpeg', q); }
     return out;
@@ -288,21 +340,24 @@ function downscalePhoto(img, fallback){
 $('photoInput').addEventListener('change', function(e){
   var file=e.target.files && e.target.files[0];
   if(!file) return;
-  var reader=new FileReader();
-  reader.onload=function(ev){
-    var raw=ev.target.result;
+  var getBuf = file.arrayBuffer ? file.arrayBuffer() : new Promise(function(res, rej){
+    var r=new FileReader();
+    r.onload=function(){ res(r.result); };
+    r.onerror=rej;
+    r.readAsArrayBuffer(file);
+  });
+  getBuf.then(function(buf){
+    var orientation=readExifOrientation(buf);
+    var url=URL.createObjectURL(file);
     var img=new Image();
     img.onload=function(){
-      state.photoData=downscalePhoto(img, raw);
-      $('avatarPreview').innerHTML='<img src="'+state.photoData+'" alt="Visitor photo">';
+      state.photoData=finalizePhoto(img, orientation, null);
+      URL.revokeObjectURL(url);
+      if(state.photoData){ $('avatarPreview').innerHTML='<img src="'+state.photoData+'" alt="Visitor photo">'; }
     };
-    img.onerror=function(){
-      state.photoData=null;
-      $('avatarPreview').innerHTML='<img src="'+raw+'" alt="Visitor photo">';
-    };
-    img.src=raw;
-  };
-  reader.readAsDataURL(file);
+    img.onerror=function(){ URL.revokeObjectURL(url); };
+    img.src=url;
+  }).catch(function(){});
 });
 
 /* ============ BACKEND ============
