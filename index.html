@@ -346,20 +346,27 @@ function submitVisitor(){
 
   var btn=$('submitBtn');
   btn.disabled=true; btn.textContent='Checking in…';
+  var settled=false;
   function settle(found){
+    if(settled) return; settled=true;
     btn.disabled=false; btn.textContent='Check In';
     if(found){ fillSummary('sum', payload); goStep(3); }
     else{ fillSummary('fb', payload); goStep(4); }
   }
 
-  /* Trust the POST: it resolving means the check-in reached Google.
-     The fallback screen appears only when the fetch itself fails —
-     the phone cannot reach Google at all — and then the coach checks
-     the visitor in from the summary on that screen. */
+  /* Send it, then show the confirmation — the POST is NOT awaited.
+     Google's answer to a POST can stall indefinitely in a browser
+     even though the check-in was written seconds earlier (proven
+     live twice: rows landed while the page sat on "Checking in…").
+     So: if the POST fails fast, the phone truly cannot reach Google
+     and the fallback screen appears; otherwise the confirmation
+     shows after a short beat. The coach's queue is where the team
+     watches it arrive. */
   backendPost(payload).then(
-    function(){ settle(true); },
+    function(){},
     function(){ settle(false); }
   );
+  setTimeout(function(){ settle(true); }, 3000);
 }
 
 function resetFlow(){
